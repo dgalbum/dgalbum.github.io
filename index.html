@@ -8890,7 +8890,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       });
     }
 
-    const APP_VERSION = "v0.1.26";
+    const APP_VERSION = "v0.1.27";
 
     let privKeyHex = null,
       pubKeyHex = null,
@@ -9650,7 +9650,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       window.onload = () => {
         initTheme(), nt = window.NostrTools;
         const verEl = document.getElementById("login-version-display");
-        verEl && (verEl.innerText = "v0.1.26");
+        verEl && (verEl.innerText = "v0.1.27");
         const initRelay = document.getElementById("new-relay-url");
         initRelay && (initRelay.value = getDefaultRelayUrl());
         const sessionPk = sessionStorage.getItem("album_session_pk"),
@@ -10104,7 +10104,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         el;
     }
 
-    async function authFetch(method, path, bodyBlob = null) {
+    async function authFetch(method, path, bodyBlob = null, signal = null) {
       const fullUrl = RELAY_HTTP + path,
         event = {
           kind: 27235,
@@ -10124,7 +10124,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           Authorization: "Nostr " + btoa(JSON.stringify(event))
         }
       };
-      bodyBlob && (opts.body = bodyBlob);
+      signal && (opts.signal = signal), bodyBlob && (opts.body = bodyBlob);
       const res = await fetch(fullUrl, opts);
       if (!res.ok) {
         let err = "Error";
@@ -10553,7 +10553,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }), setTimeout(updateTimelineActive, 100);
     }
 
-    async function fetchAndDecryptMedia(hash, base64Key, base64Iv, mime, onProgress) {
+    async function fetchAndDecryptMedia(hash, base64Key, base64Iv, mime, onProgress, signal = null) {
       const isVideo = mime && mime.startsWith("video/"),
         keyBytes = base64ToBytes(base64Key),
         ivBytes = base64ToBytes(base64Iv),
@@ -10561,7 +10561,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           onProgress && onProgress(phase, percent);
         },
         fetchWithProgress = async urlPath => {
-          const res = await authFetch("GET", urlPath),
+          const res = await authFetch("GET", urlPath, null, signal),
             contentLength = res.headers.get("content-length"),
             total = parseInt(contentLength, 10);
           if (!res.body || !total) {
@@ -10637,9 +10637,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       initialRotate = 0,
       isDraggingImg = !1,
       startDragX = 0,
-      startDragY = 0;
+      startDragY = 0,
+      viewerAbortController = null;
 
     function openViewer(p) {
+      viewerAbortController && (viewerAbortController.abort(), viewerAbortController = null),
+        viewerAbortController = new AbortController;
+      const currentSignal = viewerAbortController.signal;
       currentViewingPhotoId = p.id, imgRotate = p.r || 0, initialRotate = p.r || 0;
       const rotateBtn = document.getElementById("btn-rotate-viewer"),
         trackerBtn = document.getElementById("btn-tracker-viewer");
@@ -10691,7 +10695,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           pStatus.innerText = "🔐 本地金库解密重组中...");
         const offset = 282.7 - 282.7 * totalProgress / 100;
         ring.style.strokeDashoffset = offset.toString(), pText.innerText = totalProgress + "%";
-      }).then(bUrl => {
+      }, currentSignal).then(bUrl => {
         if (currentViewingPhotoId === p.id) {
           loader.classList.add("hidden");
           const isVid = p.mime && p.mime.startsWith("video/"),
@@ -10704,7 +10708,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             }, targetEl.load()), imgScale = 1, imgPanX = 0, imgPanY = 0, targetEl.style.transform = `translate(0px, 0px) scale(1) rotate(${imgRotate}deg)`;
         } else URL.revokeObjectURL(bUrl);
       }).catch(e => {
-        loader.innerHTML = '<div class="text-red-500 font-bold">❌ 媒体加载失败</div>';
+        "AbortError" !== e.name && (loader.innerHTML = '<div class="text-red-500 font-bold">❌ 媒体加载失败</div>');
       });
     }
 
@@ -10853,6 +10857,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     }
 
     async function closeViewer() {
+      viewerAbortController && (viewerAbortController.abort(), viewerAbortController = null);
       const tagsBar = document.getElementById("viewer-tags-bar");
       tagsBar && tagsBar.classList.add("pointer-events-none", "opacity-0");
       const modal = document.getElementById("viewer-modal");
