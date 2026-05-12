@@ -8620,6 +8620,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     </div>
 
     <div class="w-full h-full flex items-center justify-center relative overflow-hidden" id="viewer-img-container">
+
+      <button onclick="navigateViewer(-1)" class="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 z-[60] p-3 bg-black/30 hover:bg-black/60 text-white rounded-full backdrop-blur transition hidden md:block active:scale-95">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+        </svg>
+      </button>
+      <button onclick="navigateViewer(1)" class="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 z-[60] p-3 bg-black/30 hover:bg-black/60 text-white rounded-full backdrop-blur transition hidden md:block active:scale-95">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+        </svg>
+      </button>
       <div id="viewer-loading" class="absolute z-10 flex flex-col items-center justify-center">
         <div class="relative w-20 h-20 md:w-24 md:h-24 mb-4 flex items-center justify-center">
 
@@ -8890,7 +8901,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       });
     }
 
-    const APP_VERSION = "v0.1.27";
+    const APP_VERSION = "v0.1.29";
 
     let privKeyHex = null,
       pubKeyHex = null,
@@ -8991,9 +9002,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
     async function getCachedMetadata(pubkey) {
       try {
-        const db = await idbPromise;
+        const cacheKey = pubkey + "_" + (RELAY_HTTP || ""),
+          db = await idbPromise;
         return new Promise(resolve => {
-          const req = db.transaction("metadata_cache", "readonly").objectStore("metadata_cache").get(pubkey);
+          const req = db.transaction("metadata_cache", "readonly").objectStore("metadata_cache").get(cacheKey);
           req.onsuccess = () => resolve(req.result), req.onerror = () => resolve(null);
         });
       } catch (e) {
@@ -9003,12 +9015,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
     async function saveCachedMetadata(pubkey, photosArray) {
       try {
-        const cleanPhotos = photosArray.map(p => ({
+        const cacheKey = pubkey + "_" + (RELAY_HTTP || ""),
+          cleanPhotos = photosArray.map(p => ({
             ...p,
             blobUrl: null
           })),
           db = await idbPromise;
-        db.transaction("metadata_cache", "readwrite").objectStore("metadata_cache").put(cleanPhotos, pubkey);
+        db.transaction("metadata_cache", "readwrite").objectStore("metadata_cache").put(cleanPhotos, cacheKey);
       } catch (e) {}
     }
 
@@ -9115,7 +9128,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
     const workerCallbacks = {};
 
-    async function authFetchChunk(uploadId, chunkIndex, totalChunks, cipherBlob) {
+    async function authFetchChunk(uploadId, chunkIndex, totalChunks, cipherBlob, signal = null) {
       const fullUrl = RELAY_HTTP + "/api/upload/chunk",
         event = {
           kind: 27235,
@@ -9132,13 +9145,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           pubkey: pubKeyHex
         };
       event.id = nt.getEventHash(event), event.sig = nt.getSignature(event, privKeyHex);
-      const res = await fetch(fullUrl, {
+      const opts = {
         method: "POST",
         headers: {
           Authorization: "Nostr " + btoa(JSON.stringify(event))
         },
         body: cipherBlob
-      });
+      };
+      signal && (opts.signal = signal);
+      const res = await fetch(fullUrl, opts);
       if (!res.ok) {
         let err = "Chunk upload failed";
         try {
@@ -9650,7 +9665,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       window.onload = () => {
         initTheme(), nt = window.NostrTools;
         const verEl = document.getElementById("login-version-display");
-        verEl && (verEl.innerText = "v0.1.27");
+        verEl && (verEl.innerText = "v0.1.29");
         const initRelay = document.getElementById("new-relay-url");
         initRelay && (initRelay.value = getDefaultRelayUrl());
         const sessionPk = sessionStorage.getItem("album_session_pk"),
@@ -9778,7 +9793,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           } else "NOTICE" === msg[0] && showToast("toast_notice", "🚨 Relay 通知: " + escapeHTML(msg[1]), "error");
         }, ws.onclose = () => {
           window._wsPingTimer && clearInterval(window._wsPingTimer);
-          const trustBtn = "https:" === window.location.protocol && RELAY_HTTP.startsWith("https") ? ` <span class="text-blue-500 underline cursor-pointer hover:text-blue-600 ml-1 active:scale-95 inline-block" onclick="window.open('${RELAY_HTTP}', '_blank'); event.stopPropagation();">[信任证书]</span>` : "";
+          const trustBtn = RELAY_HTTP.startsWith("https") ? ` <span class="text-blue-500 underline cursor-pointer hover:text-blue-600 ml-1 active:scale-95 inline-block" onclick="window.open('${RELAY_HTTP}', '_blank'); event.stopPropagation();">[信任证书]</span>` : "";
           statusEl.innerHTML = `🔴 重连中... (${getMaskedRelayUrl()})${trustBtn}`, statusEl.className = "text-[10px] md:text-xs text-red-500 font-bold",
             window._wsReconnectTimer = setTimeout(initWebSocket, 3e3);
         };
@@ -10204,12 +10219,36 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }, 300);
     }
 
+    async function checkPauseState(task) {
+      for (;
+        "paused" === task.status;) await new Promise(r => setTimeout(r, 500));
+      if ("canceled" === task.status) throw new Error("已取消");
+    }
+
+    function cancelAllUploads(e) {
+      e.stopPropagation(), uploadTasks.forEach(t => {
+        "processing" !== t.status && "queued" !== t.status && "paused" !== t.status || (t.status = "canceled",
+          t.msg = "已取消", t.abortController && t.abortController.abort(), updateTaskItemUI(t));
+      }), updateTaskPanelHeader();
+    }
+
+    function toggleAllUploadsPause(e) {
+      e.stopPropagation();
+      const activeTasks = uploadTasks.filter(t => "processing" === t.status || "queued" === t.status || "paused" === t.status),
+        allPaused = activeTasks.length > 0 && activeTasks.every(t => "paused" === t.status);
+      activeTasks.forEach(t => {
+        allPaused ? (t.status = t._prevStatus || "queued", t.msg = "processing" === t.status ? "恢复中..." : "排队中...") : "paused" !== t.status && (t._prevStatus = t.status,
+          t.status = "paused", t.msg = "已暂停"), updateTaskItemUI(t);
+      }), allPaused && dispatchUploadTasks(), updateTaskPanelHeader();
+    }
+
     function updateTaskPanelHeader() {
       const titleEl = document.getElementById("task-panel-title"),
         spinnerEl = document.getElementById("task-spinner"),
-        queuedAndProcessing = uploadTasks.filter(t => "queued" === t.status || "processing" === t.status).length;
-      if (queuedAndProcessing > 0) titleEl.innerText = `正在处理 (${activeUploadsCount} 并发, 剩余 ${queuedAndProcessing})...`,
-        spinnerEl.classList.remove("hidden");
+        queuedAndProcessing = uploadTasks.filter(t => "queued" === t.status || "processing" === t.status || "paused" === t.status).length,
+        isAnyPaused = uploadTasks.some(t => "paused" === t.status);
+      if (queuedAndProcessing > 0) titleEl.innerHTML = `处理中 <span class="text-xs text-gray-500 font-normal">(${activeUploadsCount} 并发, 剩 ${queuedAndProcessing})</span>\n          <button onclick="toggleAllUploadsPause(event)" class="ml-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 px-2 py-0.5 rounded text-[10px] text-gray-700 dark:text-gray-200 shadow-sm">${isAnyPaused ? "▶️ 继续" : "⏸️ 暂停"}</button>\n          <button onclick="cancelAllUploads(event)" class="ml-1 bg-red-100 dark:bg-red-900/30 hover:bg-red-200 text-red-600 px-2 py-0.5 rounded text-[10px] shadow-sm">⏹️ 取消</button>\n        `,
+        spinnerEl.classList.remove("hidden"), isAnyPaused && 0 === activeUploadsCount && spinnerEl.classList.add("hidden");
       else if (uploadTasks.length > 0) {
         titleEl.innerText = "传输任务汇总", spinnerEl.classList.add("hidden");
         const successes = uploadTasks.filter(t => "success" === t.status).length,
@@ -10234,7 +10273,27 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       "queued" === task.status ? statusHtml = '<span class="text-[10px] font-bold text-gray-400">等待中</span>' : "processing" === task.status ? statusHtml = `\n          <svg class="w-5 h-5 transform -rotate-90 shrink-0">\n            <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="2" fill="none" class="text-gray-200 dark:text-gray-700"></circle>\n            <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="2" fill="none" class="text-blue-500 transition-all duration-300" stroke-dasharray="50.2" stroke-dashoffset="${offset}"></circle>\n          </svg>` : "success" === task.status ? statusHtml = '<svg class="w-5 h-5 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>' : "error" === task.status && (statusHtml = '<svg class="w-5 h-5 text-red-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>');
       const safeName = escapeHTML(task.file.name);
       row || (row = document.createElement("div"), row.id = "task-row-" + task.id, row.className = "flex items-center justify-between p-2.5 bg-gray-50 dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700",
-        container.prepend(row)), row.innerHTML = `\n        <div class="flex items-center space-x-3 flex-1 min-w-0 pr-2">\n          ${statusHtml}\n          <div class="flex flex-col flex-1 min-w-0">\n            <span class="text-xs font-bold text-gray-800 dark:text-gray-200 truncate" title="${safeName}">${safeName}</span>\n            <span class="text-[10px] text-gray-500 font-mono truncate ${"error" === task.status ? "text-red-400" : ""}">${task.msg}</span>\n          </div>\n        </div>\n      `;
+        container.prepend(row));
+      let cancelBtnHtml = "";
+      if ("queued" === task.status || "processing" === task.status || "paused" === task.status) {
+        const pauseIcon = "paused" === task.status ? '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>' : '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>';
+        cancelBtnHtml = `\n          <div class="flex space-x-1 shrink-0">\n            <button onclick="togglePauseTask('${task.id}')" class="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition active:scale-95" title="暂停/继续">\n              ${pauseIcon}\n            </button>\n            <button onclick="cancelUploadTask('${task.id}')" class="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition active:scale-95" title="取消上传">\n              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>\n            </button>\n          </div>\n        `;
+      }
+      row.innerHTML = `\n        <div class="flex items-center justify-between w-full">\n          <div class="flex items-center space-x-3 flex-1 min-w-0 pr-2">\n            ${statusHtml}\n            <div class="flex flex-col flex-1 min-w-0">\n              <span class="text-xs font-bold text-gray-800 dark:text-gray-200 truncate" title="${safeName}">${safeName}</span>\n              <span class="text-[10px] text-gray-500 font-mono truncate ${"error" === task.status || "canceled" === task.status ? "text-red-400" : "paused" === task.status ? "text-yellow-500" : ""}">${task.msg}</span>\n            </div>\n          </div>\n          ${cancelBtnHtml}\n        </div>\n      `;
+    }
+
+    function togglePauseTask(taskId) {
+      const task = uploadTasks.find(t => t.id === taskId);
+      task && ("processing" === task.status || "queued" === task.status ? (task._prevStatus = task.status,
+          task.status = "paused", task.msg = "已暂停") : "paused" === task.status && (task.status = task._prevStatus || "queued",
+          task.msg = "processing" === task.status ? "恢复上传..." : "排队中...", "queued" === task.status && dispatchUploadTasks()),
+        updateTaskItemUI(task), updateTaskPanelHeader());
+    }
+
+    function cancelUploadTask(taskId) {
+      const task = uploadTasks.find(t => t.id === taskId);
+      task && ("queued" === task.status || "paused" === task.status ? (task.status = "canceled",
+        task.msg = "已取消", updateTaskItemUI(task), updateTaskPanelHeader()) : "processing" === task.status && task.abortController && task.abortController.abort());
     }
 
     async function dispatchUploadTasks() {
@@ -10246,12 +10305,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             let attempt = 0,
               success = !1,
               lastError = null;
-            for (; attempt <= 3 && !success;) try {
+            for (nextTask.abortController = new AbortController; attempt <= 3 && !success;) try {
               attempt > 0 && (nextTask.msg = `网络异常，正在重试 (${attempt}/3)...`, nextTask.progress = 0,
                   updateTaskItemUI(nextTask), await new Promise(r => setTimeout(r, 1500))), await executeSingleUpload(nextTask),
                 success = !0;
             } catch (err) {
-              lastError = err;
+              if (lastError = err, "AbortError" === err.name || "已取消" === err.message) {
+                lastError = new Error("已取消");
+                break;
+              }
               const errMsg = (err.message || "").toLowerCase();
               if (errMsg.includes("quota") || errMsg.includes("too large")) {
                 lastError = new Error(errMsg.includes("quota") ? "上传失败：云端存储配额不足" : "上传失败：单文件体积超限制");
@@ -10259,8 +10321,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               }
               attempt++, console.warn(`[Task ${nextTask.id}] 第 ${attempt} 次尝试失败:`, err);
             }
-            success ? (nextTask.status = "success", nextTask.msg = "加密上链完成", nextTask.progress = 100) : (nextTask.status = "error",
-              nextTask.msg = lastError ? lastError.message || "上传彻底失败" : "上传失败");
+            success ? (nextTask.status = "success", nextTask.msg = "加密上链完成", nextTask.progress = 100) : lastError && "已取消" === lastError.message ? (nextTask.status = "canceled",
+              nextTask.msg = "已取消") : (nextTask.status = "error", nextTask.msg = lastError ? lastError.message || "上传彻底失败" : "上传失败");
           })().finally(() => {
             activeUploadsCount--, updateTaskItemUI(nextTask), dispatchUploadTasks();
           });
@@ -10283,16 +10345,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           uploadId = "U" + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
         let lastRes;
         for (let i = 0; i < totalChunks; i++) {
-          task.progress = Math.round(i / totalChunks * 80), task.msg = `分片加密传送中 (${i + 1}/${totalChunks})...`,
+          await checkPauseState(task), task.progress = Math.round(i / totalChunks * 80), task.msg = `分片加密传送中 (${i + 1}/${totalChunks})...`,
             updateTaskItemUI(task);
           const chunkBlob = file.slice(i * chunkSize, (i + 1) * chunkSize),
             chunkIv = incrementIv(ivBytes, i),
             cipherChunk = await encryptBlob(chunkBlob, keyBytes, chunkIv);
-          lastRes = await authFetchChunk(uploadId, i, totalChunks, cipherChunk);
+          await checkPauseState(task), lastRes = await authFetchChunk(uploadId, i, totalChunks, cipherChunk, task.abortController.signal);
         }
-        hashMain = lastRes.file_hash, finalSize = lastRes.size, task.progress = 90, task.msg = "上传封面缩略图...",
-          updateTaskItemUI(task);
-        const resThumb = await authFetch("POST", "/api/upload", cipherThumb);
+        hashMain = lastRes.file_hash, finalSize = lastRes.size, await checkPauseState(task),
+          task.progress = 90, task.msg = "上传封面缩略图...", updateTaskItemUI(task);
+        const resThumb = await authFetch("POST", "/api/upload", cipherThumb, task.abortController.signal);
         hashThumb = (await resThumb.json()).file_hash;
       } else {
         const isOriginal = document.getElementById("upload-original-toggle") && document.getElementById("upload-original-toggle").checked;
@@ -10312,16 +10374,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             uploadId = "U" + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
           let lastRes;
           for (let i = 0; i < totalChunks; i++) {
-            task.progress = Math.round(75 + i / totalChunks * 15), task.msg = `安全分块上传 (${i + 1}/${totalChunks})...`,
-              updateTaskItemUI(task);
+            await checkPauseState(task), task.progress = Math.round(75 + i / totalChunks * 15),
+              task.msg = `安全分块上传 (${i + 1}/${totalChunks})...`, updateTaskItemUI(task);
             const chunkBlob = cipherMain.slice(i * chunkSize, (i + 1) * chunkSize);
-            lastRes = await authFetchChunk(uploadId, i, totalChunks, chunkBlob);
+            await checkPauseState(task), lastRes = await authFetchChunk(uploadId, i, totalChunks, chunkBlob, task.abortController.signal);
           }
-          hashMain = lastRes.file_hash;
-          const resThumb = await authFetch("POST", "/api/upload", cipherThumb);
+          hashMain = lastRes.file_hash, await checkPauseState(task);
+          const resThumb = await authFetch("POST", "/api/upload", cipherThumb, task.abortController.signal);
           hashThumb = (await resThumb.json()).file_hash;
         } else {
-          const [resMain, resThumb] = await Promise.all([authFetch("POST", "/api/upload", cipherMain), authFetch("POST", "/api/upload", cipherThumb)]);
+          await checkPauseState(task);
+          const [resMain, resThumb] = await Promise.all([authFetch("POST", "/api/upload", cipherMain, task.abortController.signal), authFetch("POST", "/api/upload", cipherThumb, task.abortController.signal)]);
           hashMain = (await resMain.json()).file_hash, hashThumb = (await resThumb.json()).file_hash;
         }
         saveCachedCipher(hashMain, cipherMain);
@@ -10434,7 +10497,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
       const mediaValue = currentMediaTypeFilter,
         displayPhotos = photos.filter(p => !(isReviewSelectedMode && !selectedPhotos.has(p.id)) && (!hiddenInboxPhotos.has(p.id) && ((!p.isShared || !blacklistedPubkeys.has(p.owner)) && (("mine" !== filterValue || !p.isShared) && (!("shared" === filterValue && !p.isShared) && (("image" !== mediaValue || !p.mime || !p.mime.startsWith("video/")) && (!!("video" !== mediaValue || p.mime && p.mime.startsWith("video/")) && !!(!keyword || p.tags && p.tags.toLowerCase().includes(keyword)))))))));
-      displayPhotos.sort((a, b) => b.display_ts - a.display_ts);
+      displayPhotos.sort((a, b) => b.display_ts - a.display_ts), window._currentDisplayPhotos = displayPhotos;
       const btnSelectAll = document.querySelector("#selection-bar button[onclick='selectAllPhotos()']");
       if (btnSelectAll && displayPhotos.length > 0) {
         displayPhotos.every(p => selectedPhotos.has(p.id)) ? (btnSelectAll.innerHTML = '<svg class="w-5 h-5 mb-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>取消全选',
@@ -10559,42 +10622,41 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ivBytes = base64ToBytes(base64Iv),
         reportProgress = (phase, percent) => {
           onProgress && onProgress(phase, percent);
-        },
-        fetchWithProgress = async urlPath => {
-          const res = await authFetch("GET", urlPath, null, signal),
-            contentLength = res.headers.get("content-length"),
-            total = parseInt(contentLength, 10);
-          if (!res.body || !total) {
-            const b = await res.blob();
-            return reportProgress("download", 100), b;
-          }
-          const reader = res.body.getReader(),
-            chunks = [];
-          let loaded = 0;
-          for (;;) {
-            const {
-              done: done,
-              value: value
-            } = await reader.read();
-            if (done) break;
-            chunks.push(value), loaded += value.length, reportProgress("download", Math.round(loaded / total * 100));
-          }
-          const result = new Uint8Array(loaded);
-          let offset = 0;
-          for (let chunk of chunks) result.set(chunk, offset), offset += chunk.length;
-          return new Blob([result]);
         };
-      if (isVideo) {
-        reportProgress("download_start", 0);
-        const fullCipherBlob = await fetchWithProgress(`/api/download/${hash}`),
-          chunkCipherSize = 5242896,
-          totalChunks = Math.ceil(fullCipherBlob.size / chunkCipherSize),
+      let cipherBlob = await getCachedCipher(hash);
+      if (cipherBlob ? reportProgress("download_cache", 100) : (reportProgress("download_start", 0),
+          cipherBlob = await (async urlPath => {
+            const res = await authFetch("GET", urlPath, null, signal),
+              contentLength = res.headers.get("content-length"),
+              total = parseInt(contentLength, 10);
+            if (!res.body || !total) {
+              const b = await res.blob();
+              return reportProgress("download", 100), b;
+            }
+            const reader = res.body.getReader(),
+              chunks = [];
+            let loaded = 0;
+            for (;;) {
+              const {
+                done: done,
+                value: value
+              } = await reader.read();
+              if (done) break;
+              chunks.push(value), loaded += value.length, reportProgress("download", Math.round(loaded / total * 100));
+            }
+            const result = new Uint8Array(loaded);
+            let offset = 0;
+            for (let chunk of chunks) result.set(chunk, offset), offset += chunk.length;
+            return new Blob([result]);
+          })(`/api/download/${hash}`), saveCachedCipher(hash, cipherBlob)), reportProgress("decrypt", 0),
+        isVideo) {
+        const chunkCipherSize = 5242896,
+          totalChunks = Math.ceil(cipherBlob.size / chunkCipherSize),
           plainBlobs = [];
-        reportProgress("decrypt", 0);
         for (let i = 0; i < totalChunks; i++) {
           const start = i * chunkCipherSize,
-            end = Math.min(start + chunkCipherSize, fullCipherBlob.size),
-            chunkCipher = fullCipherBlob.slice(start, end),
+            end = Math.min(start + chunkCipherSize, cipherBlob.size),
+            chunkCipher = cipherBlob.slice(start, end),
             chunkIv = incrementIv(ivBytes, i),
             chunkPlain = await decryptBlob(chunkCipher, keyBytes, chunkIv);
           plainBlobs.push(chunkPlain), reportProgress("decrypt", Math.round((i + 1) / totalChunks * 100));
@@ -10604,10 +10666,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         });
         return URL.createObjectURL(finalPlainBlob);
       } {
-        let cipherBlob = await getCachedCipher(hash);
-        cipherBlob ? reportProgress("download_cache", 100) : (reportProgress("download_start", 0),
-            cipherBlob = await fetchWithProgress(`/api/download/${hash}`), saveCachedCipher(hash, cipherBlob)),
-          reportProgress("decrypt", 0);
         const plainBlob = await decryptBlob(cipherBlob, keyBytes, ivBytes);
         return reportProgress("decrypt", 100), URL.createObjectURL(plainBlob);
       }
@@ -10639,6 +10697,32 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       startDragX = 0,
       startDragY = 0,
       viewerAbortController = null;
+
+    async function silentPrecacheMedia(hash) {
+      if (!hash) return;
+      if (!await getCachedCipher(hash)) try {
+        const res = await authFetch("GET", `/api/download/${hash}`);
+        if (res.ok) {
+          saveCachedCipher(hash, await res.blob());
+        }
+      } catch (e) {}
+    }
+
+    function silentPrecacheNeighbors(currentId) {
+      if (!window._currentDisplayPhotos || 0 === window._currentDisplayPhotos.length) return;
+      const idx = window._currentDisplayPhotos.findIndex(p => p.id === currentId); -
+      1 !== idx && (idx + 1 < window._currentDisplayPhotos.length && silentPrecacheMedia(window._currentDisplayPhotos[idx + 1].orig),
+        idx - 1 >= 0 && silentPrecacheMedia(window._currentDisplayPhotos[idx - 1].orig));
+    }
+
+    function navigateViewer(offset) {
+      if (!currentViewingPhotoId || !window._currentDisplayPhotos) return;
+      const idx = window._currentDisplayPhotos.findIndex(p => p.id === currentViewingPhotoId);
+      if (-1 === idx) return;
+      const targetIdx = idx + offset;
+      targetIdx >= 0 && targetIdx < window._currentDisplayPhotos.length ? (viewerAbortController && (viewerAbortController.abort(),
+        viewerAbortController = null), openViewer(window._currentDisplayPhotos[targetIdx])) : showToast("toast_edge", "已经是" + (offset > 0 ? "最后一张" : "第一张") + "了", "info");
+    }
 
     function openViewer(p) {
       viewerAbortController && (viewerAbortController.abort(), viewerAbortController = null),
@@ -10676,7 +10760,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         imgEl = document.getElementById("viewer-img"),
         videoEl = document.getElementById("viewer-video"),
         loader = document.getElementById("viewer-loading");
-      imgEl.src = "", videoEl.src = "", imgEl.classList.add("hidden"), videoEl.classList.add("hidden"),
+      videoEl.onerror = null, imgEl.src = "", videoEl.src = "", imgEl.classList.add("hidden"),
+        videoEl.classList.add("hidden"), loader.innerHTML = '\n        <div class="relative w-20 h-20 md:w-24 md:h-24 mb-4 flex items-center justify-center">\n          <svg class="absolute inset-0 w-full h-full text-white/10" viewBox="0 0 100 100">\n            <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="8"></circle>\n          </svg>\n          <svg class="absolute inset-0 w-full h-full text-blue-500 drop-shadow-[0_0_12px_rgba(59,130,246,0.5)] ring-progress-circle" viewBox="0 0 100 100">\n            <circle id="viewer-progress-ring" cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-dasharray="282.7" stroke-dashoffset="282.7"></circle>\n          </svg>\n          <div id="viewer-progress-text" class="absolute inset-0 flex items-center justify-center text-white font-black text-sm md:text-lg tracking-wider drop-shadow-md">0%</div>\n        </div>\n        <div id="viewer-progress-status" class="text-[10px] md:text-xs font-bold tracking-widest text-white/70 drop-shadow-md">准备安全通道...</div>\n      ',
         imgEl.classList.replace("opacity-100", "opacity-0"), videoEl.classList.replace("opacity-100", "opacity-0"),
         loader.classList.remove("hidden");
       const ring = document.getElementById("viewer-progress-ring"),
@@ -10705,7 +10790,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             targetEl.classList.replace("opacity-0", "opacity-100"), isVid && (targetEl.onerror = () => {
               const err = targetEl.error;
               !err || 3 !== err.code && 4 !== err.code || showToast("toast_vid_err", "❌ 浏览器不支持该视频编码(如H.265)，请点击下载后观看", "error");
-            }, targetEl.load()), imgScale = 1, imgPanX = 0, imgPanY = 0, targetEl.style.transform = `translate(0px, 0px) scale(1) rotate(${imgRotate}deg)`;
+            }, targetEl.load()), imgScale = 1, imgPanX = 0, imgPanY = 0, targetEl.style.transform = `translate(0px, 0px) scale(1) rotate(${imgRotate}deg)`,
+            silentPrecacheNeighbors(p.id);
         } else URL.revokeObjectURL(bUrl);
       }).catch(e => {
         "AbortError" !== e.name && (loader.innerHTML = '<div class="text-red-500 font-bold">❌ 媒体加载失败</div>');
@@ -10924,6 +11010,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         a.click(), document.body.removeChild(a);
     }
 
+    window._currentDisplayPhotos = [];
+
     let wakeLockObj = null;
 
     async function requestWakeLock() {
@@ -11056,11 +11144,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (0 === selectedPhotos.size) return;
       if (!await uiConfirm("删除多张图片", "删除您上传的照片将【物理粉碎】远端硬盘文件；\n删除好友共享的照片仅作【移出收件箱】处理。\n确认执行吗？", !0)) return;
       const toastId = "toast_del_" + Date.now();
-      showToast(toastId, "执行清理...", "loading");
       let hardCount = 0,
         softCount = 0;
       const idsToDelete = Array.from(selectedPhotos);
-      for (let id of idsToDelete) {
+      for (let i = 0; i < idsToDelete.length; i++) {
+        const id = idsToDelete[i];
+        showToast(toastId, `执行清理 (${i + 1}/${idsToDelete.length})...`, "loading");
         const p = photos.find(x => x.id === id);
         if (p) try {
           if (p.isShared) softCount++;
@@ -11271,7 +11360,48 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
     }
 
-    vModal.addEventListener("wheel", e => {
+    document.addEventListener("keydown", e => {
+      vModal.classList.contains("hidden") || ("ArrowLeft" === e.key && navigateViewer(-1),
+        "ArrowRight" === e.key && navigateViewer(1), "Escape" === e.key && closeViewer());
+    });
+
+    let touchStartX = 0,
+      touchStartY = 0,
+      initialTouchDistance = 0,
+      initialTouchScale = 1;
+
+    vModal.addEventListener("touchstart", e => {
+        if (1 === e.touches.length) touchStartX = e.touches[0].clientX, touchStartY = e.touches[0].clientY,
+          startDragX = touchStartX - imgPanX, startDragY = touchStartY - imgPanY, isDraggingImg = !0;
+        else if (2 === e.touches.length) {
+          isDraggingImg = !1;
+          const dx = e.touches[0].clientX - e.touches[1].clientX,
+            dy = e.touches[0].clientY - e.touches[1].clientY;
+          initialTouchDistance = Math.hypot(dx, dy), initialTouchScale = imgScale;
+        }
+      }, {
+        passive: !1
+      }), vModal.addEventListener("touchmove", e => {
+        if (1 === e.touches.length && isDraggingImg) imgPanX = e.touches[0].clientX - startDragX,
+          imgPanY = e.touches[0].clientY - startDragY;
+        else if (2 === e.touches.length) {
+          e.preventDefault();
+          const dx = e.touches[0].clientX - e.touches[1].clientX,
+            dy = e.touches[0].clientY - e.touches[1].clientY,
+            distance = Math.hypot(dx, dy);
+          imgScale = initialTouchScale * (distance / initialTouchDistance), imgScale = Math.max(.5, Math.min(imgScale, 5));
+        }
+        const transformStr = `translate(${imgPanX}px, ${imgPanY}px) scale(${imgScale}) rotate(${imgRotate}deg)`;
+        vImg.style.transform = transformStr, vVid.style.transform = transformStr;
+      }, {
+        passive: !1
+      }), vModal.addEventListener("touchend", e => {
+        if (1 === e.changedTouches.length && isDraggingImg) {
+          const diffX = e.changedTouches[0].clientX - touchStartX;
+          1 === imgScale && Math.abs(diffX) > 50 && navigateViewer(diffX > 0 ? -1 : 1);
+        }
+        isDraggingImg = !1;
+      }), vModal.addEventListener("wheel", e => {
         if (!vModal.classList.contains("hidden")) {
           e.preventDefault(), imgScale += e.deltaY < 0 ? .1 : -.1, imgScale = Math.max(.5, Math.min(imgScale, 5));
           const transformStr = `translate(${imgPanX}px, ${imgPanY}px) scale(${imgScale}) rotate(${imgRotate}deg)`;
