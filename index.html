@@ -8901,7 +8901,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       });
     }
 
-    const APP_VERSION = "v0.1.29";
+    const APP_VERSION = "v0.1.30";
 
     let privKeyHex = null,
       pubKeyHex = null,
@@ -9665,7 +9665,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       window.onload = () => {
         initTheme(), nt = window.NostrTools;
         const verEl = document.getElementById("login-version-display");
-        verEl && (verEl.innerText = "v0.1.29");
+        verEl && (verEl.innerText = "v0.1.30");
         const initRelay = document.getElementById("new-relay-url");
         initRelay && (initRelay.value = getDefaultRelayUrl());
         const sessionPk = sessionStorage.getItem("album_session_pk"),
@@ -10698,21 +10698,51 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       startDragY = 0,
       viewerAbortController = null;
 
-    async function silentPrecacheMedia(hash) {
-      if (!hash) return;
-      if (!await getCachedCipher(hash)) try {
-        const res = await authFetch("GET", `/api/download/${hash}`);
-        if (res.ok) {
-          saveCachedCipher(hash, await res.blob());
+    window._currentDisplayPhotos = [];
+
+    let lastNavDirection = 1,
+      prefetchAbortController = null,
+      prefetchQueue = [],
+      isPrefetching = !1;
+
+    async function processPrefetchQueue() {
+      if (!isPrefetching) {
+        for (isPrefetching = !0; prefetchQueue.length > 0;) {
+          const hash = prefetchQueue.shift();
+          try {
+            if (!await getCachedCipher(hash)) {
+              const signal = prefetchAbortController ? prefetchAbortController.signal : null,
+                res = await authFetch("GET", `/api/download/${hash}`, null, signal);
+              if (res.ok) {
+                saveCachedCipher(hash, await res.blob());
+              }
+            }
+          } catch (e) {
+            if ("AbortError" === e.name) {
+              prefetchQueue = [];
+              break;
+            }
+          }
         }
-      } catch (e) {}
+        isPrefetching = !1;
+      }
     }
 
     function silentPrecacheNeighbors(currentId) {
       if (!window._currentDisplayPhotos || 0 === window._currentDisplayPhotos.length) return;
-      const idx = window._currentDisplayPhotos.findIndex(p => p.id === currentId); -
-      1 !== idx && (idx + 1 < window._currentDisplayPhotos.length && silentPrecacheMedia(window._currentDisplayPhotos[idx + 1].orig),
-        idx - 1 >= 0 && silentPrecacheMedia(window._currentDisplayPhotos[idx - 1].orig));
+      const idx = window._currentDisplayPhotos.findIndex(p => p.id === currentId);
+      if (-1 === idx) return;
+      prefetchAbortController && prefetchAbortController.abort(), prefetchAbortController = new AbortController,
+        prefetchQueue = [];
+      const offsets = lastNavDirection > 0 ? [1, 2, 3, -1] : [-1, -2, -3, 1];
+      for (let offset of offsets) {
+        const targetIdx = idx + offset;
+        if (targetIdx >= 0 && targetIdx < window._currentDisplayPhotos.length) {
+          const p = window._currentDisplayPhotos[targetIdx];
+          p && p.mime && !p.mime.startsWith("video/") && prefetchQueue.push(p.orig);
+        }
+      }
+      processPrefetchQueue();
     }
 
     function navigateViewer(offset) {
@@ -10721,7 +10751,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (-1 === idx) return;
       const targetIdx = idx + offset;
       targetIdx >= 0 && targetIdx < window._currentDisplayPhotos.length ? (viewerAbortController && (viewerAbortController.abort(),
-        viewerAbortController = null), openViewer(window._currentDisplayPhotos[targetIdx])) : showToast("toast_edge", "已经是" + (offset > 0 ? "最后一张" : "第一张") + "了", "info");
+        viewerAbortController = null), lastNavDirection = offset > 0 ? 1 : -1, openViewer(window._currentDisplayPhotos[targetIdx])) : showToast("toast_edge", "已经是" + (offset > 0 ? "最后一张" : "第一张") + "了", "info");
     }
 
     function openViewer(p) {
@@ -10943,7 +10973,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     }
 
     async function closeViewer() {
-      viewerAbortController && (viewerAbortController.abort(), viewerAbortController = null);
+      viewerAbortController && (viewerAbortController.abort(), viewerAbortController = null),
+        prefetchAbortController && (prefetchAbortController.abort(), prefetchAbortController = null);
       const tagsBar = document.getElementById("viewer-tags-bar");
       tagsBar && tagsBar.classList.add("pointer-events-none", "opacity-0");
       const modal = document.getElementById("viewer-modal");
@@ -11009,8 +11040,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       a.href = targetSrc, a.download = `DageAlbum_${Date.now()}.${ext}`, document.body.appendChild(a),
         a.click(), document.body.removeChild(a);
     }
-
-    window._currentDisplayPhotos = [];
 
     let wakeLockObj = null;
 
