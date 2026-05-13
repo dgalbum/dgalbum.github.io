@@ -8095,7 +8095,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         </button>
         <h2 class="text-xl font-bold mb-5">添加账号</h2>
         <div class="space-y-4">
-          <div>
+          <div id="setup-relay-container">
             <label class="block text-[11px] font-bold text-gray-500 mb-1 ml-1">Relay 节点地址</label>
             <input type="text" id="new-relay-url" value="127.0.0.1:3009" class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 outline-none font-mono text-xs">
           </div>
@@ -8901,7 +8901,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       });
     }
 
-    const APP_VERSION = "v0.1.30";
+    const APP_VERSION = "v0.1.31";
 
     let privKeyHex = null,
       pubKeyHex = null,
@@ -9652,6 +9652,24 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       return "file:" === p ? "127.0.0.1:3009" : "https:" === p ? h + ":13009" : "http:" === p ? h + ":3009" : "127.0.0.1:3009";
     }
 
+    async function applyExternalRelayConfig() {
+      const initRelay = document.getElementById("new-relay-url"),
+        container = document.getElementById("setup-relay-container");
+      let url = getDefaultRelayUrl(),
+        shouldHide = !1;
+      try {
+        const res = await fetch("relay.json", {
+          cache: "no-store"
+        });
+        if (res.ok) {
+          const config = await res.json();
+          config.relay_url && "" !== config.relay_url.trim() && "127.0.0.1:3009" !== config.relay_url.trim() && (url = config.relay_url.trim(),
+            shouldHide = !0);
+        }
+      } catch (e) {}
+      initRelay && (initRelay.value = url), shouldHide && container && (container.style.display = "none");
+    }
+
     cryptoWorker.onmessage = e => {
         const {
           id: id,
@@ -9665,9 +9683,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       window.onload = () => {
         initTheme(), nt = window.NostrTools;
         const verEl = document.getElementById("login-version-display");
-        verEl && (verEl.innerText = "v0.1.30");
-        const initRelay = document.getElementById("new-relay-url");
-        initRelay && (initRelay.value = getDefaultRelayUrl());
+        verEl && (verEl.innerText = "v0.1.31"), applyExternalRelayConfig();
         const sessionPk = sessionStorage.getItem("album_session_pk"),
           sessionSk = sessionStorage.getItem("album_session_sk"),
           sessionUrl = sessionStorage.getItem("album_relay");
